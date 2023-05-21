@@ -34,6 +34,7 @@ class InputBox:
         self.tcx = 0 # text_cursor_x
         self.wcy = top + outline + padding_y
         self.wcx = left + outline + padding_x
+        self.additional = False
     def update(self, text):
         self.lines = text[:self.max_length].split('\n')
     def text(self):
@@ -81,11 +82,19 @@ class InputBox:
             return
         self.additional = False
         if len(self.lines[self.tcy]) > 0:
-            self.lines[self.tcy] = self.lines[self.tcy][:max(0,self.tcx-1)] + self.lines[self.tcy][self.tcx:]
-            self.count -= 1
-            self.tcx -= 1
-            self.dispatch('change')
-            self.render()
+            if (self.tcx > 0):
+                self.lines[self.tcy] = self.lines[self.tcy][:max(0,self.tcx-1)] + self.lines[self.tcy][self.tcx:]
+                self.count -= 1
+                self.tcx -= 1
+                self.dispatch('change')
+                self.render()
+            elif self.tcy - 1 >= 0:
+                self.tcx = len(self.lines[self.tcy - 1])
+                self.lines[self.tcy - 1] += self.lines.pop(self.tcy)
+                self.count -= 1
+                self.tcy -= 1
+                self.dispatch('change')
+                self.render()
         elif self.tcy > 0:
             self.lines.pop(self.tcy)
             self.count -= 1
@@ -146,7 +155,9 @@ class InputBox:
         self.container.refresh()
         self.tty()
         self.window.move(self.wcy, self.wcx)
-        self.render()
+        if self.text:
+            self.render()
+            self.dispatch('change')
         wc = ' '
         while not ((wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release))):
             wc = self.window.get_wch()
