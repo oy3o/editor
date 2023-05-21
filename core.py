@@ -29,7 +29,7 @@ class InputBox:
         self.view.scrollok(True)
         self.rendered = ''
         self.lines = text[:self.max_length].split('\n')
-        self.count = 0
+        self.count = len(text)
         self.tcy = 0 # text_cursor_y
         self.tcx = 0 # text_cursor_x
         self.wcy = top + outline + padding_y
@@ -146,6 +146,7 @@ class InputBox:
         self.container.refresh()
         self.tty()
         self.window.move(self.wcy, self.wcx)
+        self.render()
         wc = ' '
         while not ((wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release))):
             wc = self.window.get_wch()
