@@ -135,7 +135,7 @@ class InputBox:
             self.cursor_right()
         elif wc == curses.KEY_LEFT:
             self.cursor_left()
-        elif ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127) or wc in ('^?'):
+        elif ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
             self.delete()
         else:
             self.input(wc)
@@ -143,6 +143,7 @@ class InputBox:
         curses.noecho()
         curses.cbreak()
         curses.curs_set(2)
+        curses.raw()
         self.window.keypad(True)
     def close(self):
         self.container.erase()
