@@ -22,6 +22,6 @@ print(text)
 # same arguments with Editor
 # one line without outline version
 view = screen.derwin(1, screen_width, screen_height-1, 0)
-inputbox = InputBox(view, 0, 0, 0, 0, 0, 0, outline = 0, release = '\n')
+inputbox = InputBox(view, outline = 0, release = '\n')
 command = inputbox.edit()
 ```
