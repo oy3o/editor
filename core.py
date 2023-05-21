@@ -32,6 +32,8 @@ class InputBox:
         self.update(text)
     
     def update(self, text):
+        if type(text) != str:
+            text = str(text)
         self.rendered = ''
         self.lines = text[:self.max_length].split('\n')
         self.count = len(text)
@@ -136,10 +138,11 @@ class InputBox:
             self.cursor_right()
         elif wc == curses.KEY_LEFT:
             self.cursor_left()
-        elif ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
-            self.delete()
-        else:
-            self.input(wc)
+        elif type(wc) == str:
+            if ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
+                self.delete()
+            else:
+                self.input(wc)
     def tty(self):
         curses.noecho()
         curses.cbreak()
