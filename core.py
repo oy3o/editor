@@ -21,9 +21,6 @@ class InputBox:
         if self.height < 3:
             outline = 0
         self.container = self.window.derwin(self.height, self.width, top, left)
-        if self.outline:
-            self.container.box()
-        self.container.refresh()
 
         # create a textpad
         self.view_height = self.height - outline*2 - padding_y*2
@@ -133,17 +130,28 @@ class InputBox:
             self.delete()
         else:
             self.input(wc)
-    def edit(self):
+    def tty(self):
         curses.noecho()
         curses.cbreak()
+        curses.curs_set(2)
         self.window.keypad(True)
+    def close(self):
+        self.container.erase()
+        self.container.refresh()
+    def edit(self):
+        curses.savetty()
+        self.container.erase()
+        if self.outline:
+            self.container.box()
+        self.container.refresh()
+        self.tty()
         self.window.move(self.wcy, self.wcx)
         wc = ' '
         while not ((wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release))):
             wc = self.window.get_wch()
             self.edit_handler(wc)
-        self.container.erase()
-        self.container.refresh()
+        self.close()
+        curses.resetty()
         return self.text()
     def render(self):
         vxw = uni_snippets(self.lines[self.tcy][:self.tcx], self.view_width)
@@ -204,19 +212,38 @@ class CharCounter:
 
 class Editor(InputBox):
     def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 1, editable = True, release = 27):
-        win_height, win_width = window.getmaxyx()
-        width = win_width - right - left
-        height = win_height - bottom - top
-        view = window.derwin(height, width, top, left)
-        lineview = None
+        self.window = window
+        self.top = top
+        self.bottom = bottom
+        self.right = right
+        self.left = left
+        self.padding_y = padding_y
+        self.padding_x = padding_x
+        self._text = text
+        self.listeners = listeners
+        self.max_length = max_length
+        self.outline = outline
+        self.editable = editable
+        self.release = release
 
+    def close(self):
+        super().close()
+        self.window.erase()
+        self.window.refresh()
+    def edit(self):
+        self.window.erase()
+        win_height, win_width = self.window.getmaxyx()
+        width = win_width - self.right - self.left
+        height = win_height - self.bottom - self.top
+        view = self.window.derwin(height, width, self.top, self.left)
+        lineview = None
         if height < 4:
-            super().__init__(view,0,0,15,0,padding_y,padding_x,text,listeners,max_length,outline)
+            super().__init__(view,0,0,15,0,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
             self.char = CharCounter(view, height//2, width - 8)
             view.addstr(height//2,width-8,'/')
             self.token = TokenCounter(view, height//2, width - 15)
         elif height < 5:
-            super().__init__(view,0,0,8,5,padding_y,padding_x,text,listeners,max_length,outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
             self.char = CharCounter(view, 2, width - 8)
             self.token = TokenCounter(view, 1, width - 8)
             lineview = view.derwin(height, 5, 0, 0)
@@ -224,7 +251,7 @@ class Editor(InputBox):
                 lineview.addstr(1,0, str(self.tcy).center(5))
                 lineview.addstr(2,0, str(len(self.lines)-self.tcy - 1).center(5))
         elif height < 6:
-            super().__init__(view,0,0,8,5,padding_y,padding_x,text,listeners,max_length,outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
             self.char = CharCounter(view, 3, width - 8)
             self.token = TokenCounter(view, 1, width - 8)
             lineview = view.derwin(height, 5, 0, 0)
@@ -232,7 +259,7 @@ class Editor(InputBox):
                 lineview.addstr(1,0, str(self.tcy).center(5))
                 lineview.addstr(3,0, str(len(self.lines)-self.tcy - 1).center(5))
         elif height < 12:
-            super().__init__(view,0,0,8,5,padding_y,padding_x,text,listeners,max_length,outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
             self.char = CharCounter(view, height//2-2, width - 8)
             self.token = TokenCounter(view, height//2+1, width - 8)
 
@@ -245,7 +272,7 @@ class Editor(InputBox):
                 lineview.addstr(height//2-2,0, str(self.tcy).center(5))
                 lineview.addstr(height//2+1,0, str(len(self.lines)-self.tcy - 1).center(5))
         else:
-            super().__init__(view,0,0,0,8,padding_y,padding_x,text,listeners,max_length,outline)
+            super().__init__(view,0,0,0,8,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
             self.char = CharCounter(view, height//3+6, 0)
             self.token = TokenCounter(view, height//3+3, 0)
 
@@ -258,7 +285,6 @@ class Editor(InputBox):
                 lineview.addstr(height//3-3,0, str(self.tcy).center(7))
                 lineview.addstr(height//3,0, str(len(self.lines)-self.tcy - 1).center(7))
             
-
         def updatecountview(_):
             self.char.set(self.count)
             self.token.update(self.text())
@@ -268,3 +294,5 @@ class Editor(InputBox):
             updatelineview(None)
             self.on('change',updatelineview)
             self.on('move',updatelineview)
+        self.window.refresh()
+        return super().edit()
