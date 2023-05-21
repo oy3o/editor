@@ -291,17 +291,18 @@ class Editor(InputBox):
                 lineview.addstr(height//2+1,0, str(len(self.lines)-self.tcy - 1).center(5))
         else:
             super().__init__(view,0,0,0,8,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
-            self.char = CharCounter(view, height//3+6, 0)
-            self.token = TokenCounter(view, height//3+3, 0)
-
-            view.addstr(height//3+2, 1, 'token')
-            view.addstr(height//3+5, 1, 'chars')
+            padding = (height-12)//6
+            self.char = CharCounter(view, height//3+6+padding, 0)
+            self.token = TokenCounter(view, height//3+3+padding, 0)
+            
+            view.addstr(height//3+2+padding, 1, 'token')
+            view.addstr(height//3+5+padding, 1, 'chars')
             lineview = view.derwin(height//3+2, 8, 0, 0)
-            lineview.addstr(height//3-2,0, '⭱'.center(7))
-            lineview.addstr(height//3-1,0, '⭳'.center(7))
+            lineview.addstr(height//3-2-padding,0, '⭱'.center(7))
+            lineview.addstr(height//3-1-padding,0, '⭳'.center(7))
             def updatelineview(_):
-                lineview.addstr(height//3-3,0, str(self.tcy).center(7))
-                lineview.addstr(height//3,0, str(len(self.lines)-self.tcy - 1).center(7))
+                lineview.addstr(height//3-3-padding,0, str(self.tcy).center(7))
+                lineview.addstr(height//3-padding,0, str(len(self.lines)-self.tcy - 1).center(7))
             
         def updatecountview(_):
             self.char.set(self.count)
