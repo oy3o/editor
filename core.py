@@ -1,8 +1,8 @@
 from oy3opy.utils.string import uni_snippets, snippet_index, Token, string_width
 import curses
 import curses.textpad
+import pyperclip
 import threading
-
 
 class InputBox:
     def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 0, editable = True, release = 27):
@@ -128,21 +128,6 @@ class InputBox:
             self.additional = True
         self.dispatch('change')
         self.render()
-    def edit_handler(self, wc):
-        self.window.refresh()
-        if wc == curses.KEY_UP:
-            self.cursor_up()
-        elif wc == curses.KEY_DOWN:
-            self.cursor_down()
-        elif wc == curses.KEY_RIGHT:
-            self.cursor_right()
-        elif wc == curses.KEY_LEFT:
-            self.cursor_left()
-        elif type(wc) == str:
-            if ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
-                self.delete()
-            else:
-                self.input(wc)
     def tty(self):
         curses.noecho()
         curses.cbreak()
@@ -163,11 +148,49 @@ class InputBox:
         if self.text:
             self.render()
             self.dispatch('change')
+        cache = self.text()
         while True:
             wc = self.window.get_wch()
-            if (wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release)):
+            if type(wc) == str:
+                if wc == self.release or ord(wc) == self.release:
+                    break
+                if ord(wc) == 27:
+                    self.close()
+                    curses.resetty()
+                    return ''
+                if ord(wc) == 1:# Ctrl + A cursor to start
+                    self.cursor_set(0,0)
+                elif ord(wc) == 5:# Ctrl + E cursor to end
+                    self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
+                elif ord(wc) == 24:# Ctrl + X clean
+                    cache = self.text()
+                    self.update('')
+                    self.render()
+                elif ord(wc) == 26:# Ctrl + Z restore
+                    restore = self.text()
+                    self.update(cache)
+                    cache = restore
+                    self.render()
+                    self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
+                elif ord(wc) == 3:# Ctrl + C copy
+                    pyperclip.copy(self.text()) # wsl2 to windows utf-8 to gbk copy failed
+                elif ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
+                    cache = self.text()
+                    self.delete()
+                elif ord(wc) in (curses.KEY_ENTER, 10, 13, 22) or ord(wc)>=32:
+                    cache = self.text()
+                    self.input(wc)
+            elif wc == self.release:
                 break
-            self.edit_handler(wc)
+            elif wc == curses.KEY_UP:
+                self.cursor_up()
+            elif wc == curses.KEY_DOWN:
+                self.cursor_down()
+            elif wc == curses.KEY_RIGHT:
+                self.cursor_right()
+            elif wc == curses.KEY_LEFT:
+                self.cursor_left()
+
         self.close()
         curses.resetty()
         return self.text()

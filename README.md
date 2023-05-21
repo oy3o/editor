@@ -9,6 +9,18 @@ Python API to Input text, edit text or input command, The following features are
 - char count & max length
 - token count(tiktok)
 
+```
+─────────────────────────────────────────────────────────
+      shortcut        │       description
+─────────────────────────────────────────────────────────
+      Ctrl+A          │       cursor to start
+      Ctrl+E          │       cursor to end 
+      Ctrl+X          │       clean all content
+      Ctrl+Z          │       resotre pre action
+      Ctrl+C          │       copy all content to clipboard
+      Ctrl+V          │       paste from your clipboard
+      Esc             │       exit edit
+```
 ## Editor
 ```py
 # default value of arguments
