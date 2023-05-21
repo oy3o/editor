@@ -27,16 +27,17 @@ class InputBox:
         self.view_width = self.width - outline*2 - padding_x*2
         self.view = self.window.derwin(self.view_height, self.view_width,  top + outline + padding_y, left + outline + padding_x)
         self.view.scrollok(True)
+        self.wcy = top + outline + padding_y
+        self.wcx = left + outline + padding_x
+        self.update(text)
+    
+    def update(self, text):
         self.rendered = ''
         self.lines = text[:self.max_length].split('\n')
         self.count = len(text)
         self.tcy = 0 # text_cursor_y
         self.tcx = 0 # text_cursor_x
-        self.wcy = top + outline + padding_y
-        self.wcx = left + outline + padding_x
         self.additional = False
-    def update(self, text):
-        self.lines = text[:self.max_length].split('\n')
     def text(self):
         return '\n'.join(self.lines).strip()
     def cursor_set(self, y, x):
