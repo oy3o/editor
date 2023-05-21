@@ -40,7 +40,7 @@ class InputBox:
     def update(self, text):
         self.lines = text[:self.max_length].split('\n')
     def text(self):
-        return '\n'.join(self.lines)
+        return '\n'.join(self.lines).strip()
     def cursor_set(self, y, x):
         self.tcy = y
         self.tcx = x
@@ -144,7 +144,7 @@ class InputBox:
             self.edit_handler(wc)
         self.container.erase()
         self.container.refresh()
-        return self.text().strip()
+        return self.text()
     def render(self):
         vxw = uni_snippets(self.lines[self.tcy][:self.tcx], self.view_width)
         vcy = len(vxw) - 1
