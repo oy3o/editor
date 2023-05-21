@@ -159,9 +159,10 @@ class InputBox:
         if self.text:
             self.render()
             self.dispatch('change')
-        wc = ' '
-        while not ((wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release))):
+        while True:
             wc = self.window.get_wch()
+            if (wc == self.release) or ((type(wc)==str) and (ord(wc) == self.release)):
+                break
             self.edit_handler(wc)
         self.close()
         curses.resetty()
