@@ -1,11 +1,12 @@
 from oy3opy.utils.string import uni_snippets, snippet_index, Token, string_width
+import oy3opy.input as input
 import curses
 import curses.textpad
 import pyperclip
 import threading
 
 class InputBox:
-    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 0, editable = True, release = 27):
+    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 0, editable = True, release = input.ESC):
         self.window = window
         self.listeners = listeners
         self.max_length = max_length
@@ -29,17 +30,30 @@ class InputBox:
         self.view.scrollok(True)
         self.wcy = top + outline + padding_y
         self.wcx = left + outline + padding_x
+        self.cache = None
         self.update(text)
-    
-    def update(self, text):
-        if type(text) != str:
-            text = str(text)
-        self.rendered = ''
-        self.lines = text[:self.max_length].split('\n')
-        self.count = len(text)
-        self.tcy = 0 # text_cursor_y
-        self.tcx = 0 # text_cursor_x
-        self.additional = False
+
+        input.onkey(input.DOWN, lambda _:self.cursor_down())
+        input.onkey(input.UP, lambda _:self.cursor_up())
+        input.onkey(input.LEFT, lambda _:self.cursor_left())
+        input.onkey(input.RIGHT, lambda _:self.cursor_right())
+        input.onmouse(input.SCROLL_DOWN, lambda *_:self.cursor_down())
+        input.onmouse(input.SCROLL_UP, lambda *_:self.cursor_up())
+
+        input.onkey(input.BACKSPACE, lambda _:self.delete())
+        if (input.ENTER != self.release) and (chr(input.ENTER) != self.release):
+            input.onkey(input.ENTER, lambda _:self.input('\n'))
+        if type(self.release) == int:
+            input.onkey(self.release, lambda _:input.stop())
+        else:
+            input.onchar(self.release, lambda _:input.stop())
+
+        input.onkey(input.CTRL + input.A, lambda _:self.cursor_set(0,0))
+        input.onkey(input.CTRL + input.C, lambda _:pyperclip.copy(self.text()))
+        input.onkey(input.CTRL + input.E, lambda _:self.cursor_set(len(self.lines)-1, len(self.lines[-1])))
+        input.onkey(input.CTRL + input.X, lambda _:self.clean())
+        input.onkey(input.CTRL + input.Z, lambda _:self.restore())
+
     def text(self):
         return '\n'.join(self.lines).strip()
     def cursor_set(self, y, x):
@@ -83,6 +97,7 @@ class InputBox:
     def delete(self):
         if not self.editable:
             return
+        self.cache = self.text()
         self.additional = False
         if len(self.lines[self.tcy]) > 0:
             if (self.tcx > 0):
@@ -99,6 +114,8 @@ class InputBox:
                 self.dispatch('change')
                 self.render()
         elif self.tcy > 0:
+            if not self.editable:
+                return
             self.lines.pop(self.tcy)
             self.count -= 1
             self.tcy -= 1
@@ -112,6 +129,7 @@ class InputBox:
             self.container.box()
         if self.count == self.max_length:
             return 0
+        self.cache = self.text()
         self.count += 1
         self.additional = False
         if ord(wc) in (curses.KEY_ENTER, 10, 13):
@@ -128,6 +146,35 @@ class InputBox:
             self.additional = True
         self.dispatch('change')
         self.render()
+    def update(self, text):
+        if not self.editable:
+            return
+        if type(text) != str:
+            text = str(text)
+        if not self.cache:
+            self.cache = text
+        else:
+            self.cache = self.text()
+        self.rendered = ''
+        self.lines = text[:self.max_length].split('\n')
+        self.count = len(text)
+        self.tcy = 0 # text_cursor_y
+        self.tcx = 0 # text_cursor_x
+        self.additional = False
+    def clean(self):
+        if not self.editable:
+            return
+        self.cache = self.text()
+        self.update('')
+        self.render()
+    def restore(self):
+        if not self.editable:
+            return
+        restore = self.text()
+        self.update(self.cache)
+        self.cache = restore
+        self.render()
+        self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
     def tty(self):
         curses.noecho()
         curses.cbreak()
@@ -148,48 +195,8 @@ class InputBox:
         if self.text:
             self.render()
             self.dispatch('change')
-        cache = self.text()
-        while True:
-            wc = self.window.get_wch()
-            if type(wc) == str:
-                if wc == self.release or ord(wc) == self.release:
-                    break
-                if ord(wc) == 27:
-                    self.close()
-                    curses.resetty()
-                    return ''
-                if ord(wc) == 1:# Ctrl + A cursor to start
-                    self.cursor_set(0,0)
-                elif ord(wc) == 5:# Ctrl + E cursor to end
-                    self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
-                elif ord(wc) == 24:# Ctrl + X clean
-                    cache = self.text()
-                    self.update('')
-                    self.render()
-                elif ord(wc) == 26:# Ctrl + Z restore
-                    restore = self.text()
-                    self.update(cache)
-                    cache = restore
-                    self.render()
-                    self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
-                elif ord(wc) == 3:# Ctrl + C copy
-                    pyperclip.copy(self.text()) # wsl2 to windows utf-8 to gbk copy failed
-                elif ord(wc) in (curses.KEY_BACKSPACE, curses.ascii.DEL, 127):
-                    cache = self.text()
-                    self.delete()
-                elif ord(wc) in (curses.KEY_ENTER, 10, 13, 22) or ord(wc)>=32:
-                    cache = self.text()
-                    self.input(wc)
-            elif wc == self.release:
-                break
-            elif wc == curses.KEY_UP:
-                self.cursor_up()
-            elif wc == curses.KEY_DOWN:
-                self.cursor_down()
-            elif wc == curses.KEY_RIGHT:
-                self.cursor_right()
-            elif wc == curses.KEY_LEFT:
-                self.cursor_left()
+        for wc in input.listen(self.window, move=0, excepted=[27]):
+            self.input(wc)
 
         self.close()
         curses.resetty()
@@ -252,7 +259,7 @@ class CharCounter:
         self.view.addstr(0,1,str(value).center(6))
 
 class Editor(InputBox):
-    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 1, editable = True, release = 27):
+    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 1, editable = True, release = input.ESC):
         self.window = window
         self.top = top
         self.bottom = bottom
@@ -272,19 +279,19 @@ class Editor(InputBox):
         self.window.erase()
         self.window.refresh()
     def edit(self):
-        self.window.erase()
         win_height, win_width = self.window.getmaxyx()
         width = win_width - self.right - self.left
         height = win_height - self.bottom - self.top
         view = self.window.derwin(height, width, self.top, self.left)
+        view.erase()
         lineview = None
         if height < 4:
-            super().__init__(view,0,0,15,0,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
+            super().__init__(view,0,0,15,0,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
             self.char = CharCounter(view, height//2, width - 8)
             view.addstr(height//2,width-8,'/')
             self.token = TokenCounter(view, height//2, width - 15)
         elif height < 5:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
             self.char = CharCounter(view, 2, width - 8)
             self.token = TokenCounter(view, 1, width - 8)
             lineview = view.derwin(height, 5, 0, 0)
@@ -292,7 +299,7 @@ class Editor(InputBox):
                 lineview.addstr(1,0, str(self.tcy).center(5))
                 lineview.addstr(2,0, str(len(self.lines)-self.tcy - 1).center(5))
         elif height < 6:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
             self.char = CharCounter(view, 3, width - 8)
             self.token = TokenCounter(view, 1, width - 8)
             lineview = view.derwin(height, 5, 0, 0)
@@ -300,7 +307,7 @@ class Editor(InputBox):
                 lineview.addstr(1,0, str(self.tcy).center(5))
                 lineview.addstr(3,0, str(len(self.lines)-self.tcy - 1).center(5))
         elif height < 12:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
+            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
             self.char = CharCounter(view, height//2-2, width - 8)
             self.token = TokenCounter(view, height//2+1, width - 8)
 
@@ -313,7 +320,7 @@ class Editor(InputBox):
                 lineview.addstr(height//2-2,0, str(self.tcy).center(5))
                 lineview.addstr(height//2+1,0, str(len(self.lines)-self.tcy - 1).center(5))
         else:
-            super().__init__(view,0,0,0,8,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline)
+            super().__init__(view,0,0,0,8,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
             padding = (height-12)//6
             self.char = CharCounter(view, height//3+6+padding, 0)
             self.token = TokenCounter(view, height//3+3+padding, 0)
