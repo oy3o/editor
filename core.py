@@ -10,7 +10,6 @@ class InputBox:
         self.window = window
         self.listeners = listeners
         self.max_length = max_length
-        self.editable = editable
         self.release = release
         self.outline = outline
 
@@ -30,8 +29,11 @@ class InputBox:
         self.view.scrollok(True)
         self.wcy = top + outline + padding_y
         self.wcx = left + outline + padding_x
+        
+        self.editable = True
         self.cache = None
         self.update(text)
+        self.editable = editable
 
         input.onkey(input.DOWN, lambda _:self.cursor_down())
         input.onkey(input.UP, lambda _:self.cursor_up())
@@ -147,8 +149,6 @@ class InputBox:
         self.dispatch('change')
         self.render()
     def update(self, text):
-        if not self.editable:
-            return
         if type(text) != str:
             text = str(text)
         if not self.cache:
