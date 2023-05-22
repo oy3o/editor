@@ -98,7 +98,7 @@ class InputBox:
             self.render()
     def delete(self):
         if not self.editable:
-            return
+            return self.fix()
         self.cache = self.text()
         self.additional = False
         if len(self.lines[self.tcy]) > 0:
@@ -106,14 +106,12 @@ class InputBox:
                 self.lines[self.tcy] = self.lines[self.tcy][:max(0,self.tcx-1)] + self.lines[self.tcy][self.tcx:]
                 self.count -= 1
                 self.tcx -= 1
-                self.dispatch('change')
                 self.render()
             elif self.tcy - 1 >= 0:
                 self.tcx = len(self.lines[self.tcy - 1])
                 self.lines[self.tcy - 1] += self.lines.pop(self.tcy)
                 self.count -= 1
                 self.tcy -= 1
-                self.dispatch('change')
                 self.render()
         elif self.tcy > 0:
             if not self.editable:
@@ -122,11 +120,10 @@ class InputBox:
             self.count -= 1
             self.tcy -= 1
             self.tcx = len(self.lines[self.tcy])
-            self.dispatch('change')
             self.render()
     def input(self, wc):
         if not self.editable:
-            return
+            return self.fix()
         if self.outline:
             self.container.box()
         if self.count == self.max_length:
@@ -146,9 +143,10 @@ class InputBox:
             self.tcx += 1
         if (self.tcy == len(self.lines)-1) and (self.tcx == len(self.lines[self.tcy])):
             self.additional = True
-        self.dispatch('change')
         self.render()
     def update(self, text):
+        if not self.editable:
+            return self.fix()
         if type(text) != str:
             text = str(text)
         if not self.cache:
@@ -163,13 +161,13 @@ class InputBox:
         self.additional = False
     def clean(self):
         if not self.editable:
-            return
+            return self.fix()
         self.cache = self.text()
         self.update('')
         self.render()
     def restore(self):
         if not self.editable:
-            return
+            return self.fix()
         restore = self.text()
         self.update(self.cache)
         self.cache = restore
@@ -194,8 +192,7 @@ class InputBox:
         self.window.move(self.wcy, self.wcx)
         if self.text:
             self.render()
-            self.dispatch('change')
-        for wc in input.listen(self.window, move=0, excepted=[27]):
+        for wc in input.listen(self.window, move=0):
             self.input(wc)
 
         self.close()
@@ -228,12 +225,17 @@ class InputBox:
             for i, line in enumerate(render_list):
                 self.view.addstr(i, 0, line[0])
             self.view.refresh()
-        self.window.move(self.wcy + snippet_index(render_list, lineview[vcy]), self.wcx + vcx)
+            self.dispatch('change')
+        self.pcy = self.wcy + snippet_index(render_list, lineview[vcy])
+        self.pcx = self.wcx + vcx
+        self.window.move(self.pcy, self.pcx)
     def dispatch(self, event):
         for listener in self.listeners[event]:
             listener(self)
     def on(self,event,listener):
         self.listeners[event].append(listener)
+    def fix(self):
+        self.window.move(self.pcy, self.pcx)
 
 class TokenCounter(Token):
     def __init__(self, window, y, x, init='0'):
