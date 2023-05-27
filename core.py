@@ -1,349 +1,594 @@
-from oy3opy.utils.string import uni_snippets, snippet_index, Token, string_width
+from oy3opy import *
+from oy3opy.utils.terminal import curses
+from oy3opy.utils.string import Token, string_width, splitstrings_bywidth, split_bywidth
 import oy3opy.input as input
-import curses
-import curses.textpad
 import pyperclip
 import threading
 
-class InputBox:
-    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 0, editable = True, release = input.ESC):
-        self.window = window
-        self.listeners = listeners
-        self.max_length = max_length
-        self.release = release
-        self.outline = outline
+help = '''      shortcut    │      description
+─────────────────────────────────────────────────────────────
+      Ctrl+A      │      cursor to start
+      Ctrl+E      │      cursor to end
+      Ctrl+X      │      clean all content
+      Ctrl+Z      │      resotre pre action
+      Ctrl+C      │      copy all content to clipboard
+      Ctrl+V      │      paste from your clipboard
+      Esc         │      exit edit without change
+      Ctrl+D      │      stop edit with change
 
-        win_height, win_width = self.window.getmaxyx()
-        self.width = win_width - right - left
-        self.height = win_height - bottom - top
+'''
+
+events = ['change', 'move', 'edit', 'close']
+
+@subscribe(events)
+@dataclass
+class InputBox:
+    window:curses.window
+    top:int = 0
+    bottom:int = 0
+    right:int = 0
+    left:int = 0
+    padding_y:int = 0
+    padding_x:int = 1
+    text:str = help
+    max_length:int = None
+    outline:int = 0
+    editable:bool = True
+    stop:int = None
+
+    def edit(self, text=None, editable=None):
+        self.trigger('edit')
+        # cache state
+        if text is not None:
+            cache_text = self.text
+            cache_y = getattr(self, 'curs_y', 0)
+            cache_x = getattr(self, 'curs_x', 0)
+
+            self.text = text
+            self.curs_y = 0
+            self.curs_x = 0
+        if editable is not None:
+            cache_editable = self.editable
+            self.editable = editable
+
+        # init view
+        __height, __width = self.window.getmaxyx()
+        self.width = __width - self.right - self.left
+        self.height = __height - self.bottom - self.top
+        setdefault(self, 'view', self.window.derwin(self.height, self.width, self.top, self.left))
+        self.abs_y, self.abs_x = self.view.getbegyx()
+        self.abz_y = self.abs_y + self.height
+        self.abz_x = self.abs_x + self.width
 
         # draw a box outline
-        if self.height < 3:
-            outline = 0
-        self.container = self.window.derwin(self.height, self.width, top, left)
+        if self.height < 3: self.outline = 0
+        else: self.view.box()
 
-        # create a textpad
-        self.view_height = self.height - outline*2 - padding_y*2
-        self.view_width = self.width - outline*2 - padding_x*2
-        self.view = self.window.derwin(self.view_height, self.view_width,  top + outline + padding_y, left + outline + padding_x)
-        self.view.scrollok(True)
-        self.wcy = top + outline + padding_y
-        self.wcx = left + outline + padding_x
+        # create a text stream an text cursor
+        self.text = str(self.text)[:self.max_length]
+        self.text_lines = self.text.splitlines() or ['']
+        self.count = len(self.text)
+        self.curs_y = getattr(self, 'curs_y', 0)
+        self.curs_x = getattr(self, 'curs_x', 0)
+
+        # create a textpad view and view offset
+        self.text_height = self.height - self.outline*2 - self.padding_y*2
+        self.text_width = self.width - self.outline*2 - self.padding_x*2
+        self.buffer = []
+        self.offset = self.curs_y
+        self.line_offset = 0
+        self.lineheight = len(split_bywidth(self.text_lines[self.offset], self.text_width))
+        setdefault(self, 'textviewer', self.window.derwin(self.text_height, self.text_width,  self.top + self.outline + self.padding_y, self.left + self.outline + self.padding_x))
+
+        # create a screen cursor
+        self.cursbase_y = self.abs_y + self.outline + self.padding_y
+        self.cursbase_x = self.abs_x + self.outline + self.padding_x
+        self.win_curs_y = 0
+        self.win_curs_x = 0
+ 
+
+        # register key
+        if type(self.stop) == int: input.onkey(self.stop, self.handle_stop)
+        elif self.stop is not None: input.onchar(self.stop, self.handle_stop)
+        if self.stop != input.ENTER: input.onkey(input.ENTER, self.handle_enter)
+        input.onkey(input.ESC, self.handle_exit)
+        input.onkey(input.CTRL + input.D, self.handle_stop)
+        input.onkey(input.CTRL + input.C, self.copy)
+        input.onkey(input.CTRL + input.X, self.clear)
+        input.onkey(input.CTRL + input.Z, self.undo)
+
+        input.onkey(input.CTRL + input.A, self.curs_to_start)
+        input.onkey(input.CTRL + input.E, self.curs_to_end)
+        input.onkey(input.DOWN, self.curs_down)
+        input.onkey(input.UP, self.curs_up)
+        input.onkey(input.LEFT, self.curs_left)
+        input.onkey(input.RIGHT, self.curs_right)
+        input.onkey(input.BACKSPACE, self.handle_delete)
+        input.onmouse(input.SCROLL_DOWN, self.handle_mouse)
+        input.onmouse(input.SCROLL_UP, self.handle_mouse)
+        input.onmouse(input.LEFT_CLICK, self.handle_mouse)
         
-        self.editable = True
-        self.cache = None
-        self.update(text)
-        self.editable = editable
-
-        input.onkey(input.DOWN, lambda _:self.cursor_down())
-        input.onkey(input.UP, lambda _:self.cursor_up())
-        input.onkey(input.LEFT, lambda _:self.cursor_left())
-        input.onkey(input.RIGHT, lambda _:self.cursor_right())
-        input.onmouse(input.SCROLL_DOWN, lambda *_:self.cursor_down())
-        input.onmouse(input.SCROLL_UP, lambda *_:self.cursor_up())
-
-        input.onkey(input.BACKSPACE, lambda _:self.delete())
-        if (input.ENTER != self.release) and (chr(input.ENTER) != self.release):
-            input.onkey(input.ENTER, lambda _:self.input('\n'))
-        if type(self.release) == int:
-            input.onkey(self.release, lambda _:input.stop())
-        else:
-            input.onchar(self.release, lambda _:input.stop())
-
-        input.onkey(input.CTRL + input.A, lambda _:self.cursor_set(0,0))
-        input.onkey(input.CTRL + input.C, lambda _:pyperclip.copy(self.text()))
-        input.onkey(input.CTRL + input.E, lambda _:self.cursor_set(len(self.lines)-1, len(self.lines[-1])))
-        input.onkey(input.CTRL + input.X, lambda _:self.clean())
-        input.onkey(input.CTRL + input.Z, lambda _:self.restore())
-
-    def text(self):
-        return '\n'.join(self.lines).strip()
-    def cursor_set(self, y, x):
-        self.tcy = y
-        self.tcx = x
-        self.render()
-    def cursor_up(self):
-        if self.tcy - 1 >= 0:
-            self.tcy -= 1
-            if self.tcx > len(self.lines[self.tcy]):
-                self.tcx = len(self.lines[self.tcy])
-            self.dispatch('move')
-            self.render()
-    def cursor_down(self):
-        if self.tcy + 1 < len(self.lines):
-            self.tcy += 1
-            if self.tcx > len(self.lines[self.tcy]):
-                self.tcx = len(self.lines[self.tcy])
-            self.dispatch('move')
-            self.render()
-    def cursor_right(self):
-        if self.tcx < len(self.lines[self.tcy]):
-            self.tcx += 1
-            self.dispatch('move')
-            self.render()
-        elif self.tcy + 1 < len(self.lines):
-            self.tcy += 1
-            self.tcx = 0
-            self.dispatch('move')
-            self.render()
-    def cursor_left(self):
-        if self.tcx - 1 >= 0:
-            self.tcx -= 1
-            self.dispatch('move')
-            self.render()
-        elif self.tcy - 1 >= 0:
-            self.tcy -= 1
-            self.tcx = len(self.lines[self.tcy])
-            self.dispatch('move')
-            self.render()
-    def delete(self):
-        if not self.editable:
-            return self.fix()
-        self.cache = self.text()
-        self.additional = False
-        if len(self.lines[self.tcy]) > 0:
-            if (self.tcx > 0):
-                self.lines[self.tcy] = self.lines[self.tcy][:max(0,self.tcx-1)] + self.lines[self.tcy][self.tcx:]
-                self.count -= 1
-                self.tcx -= 1
-                self.render()
-            elif self.tcy - 1 >= 0:
-                self.tcx = len(self.lines[self.tcy - 1])
-                self.lines[self.tcy - 1] += self.lines.pop(self.tcy)
-                self.count -= 1
-                self.tcy -= 1
-                self.render()
-        elif self.tcy > 0:
-            if not self.editable:
-                return
-            self.lines.pop(self.tcy)
-            self.count -= 1
-            self.tcy -= 1
-            self.tcx = len(self.lines[self.tcy])
-            self.render()
-    def input(self, wc):
-        if not self.editable:
-            return self.fix()
-        if self.outline:
-            self.container.box()
-        if self.count == self.max_length:
-            return 0
-        self.cache = self.text()
-        self.count += 1
-        self.additional = False
-        if ord(wc) in (curses.KEY_ENTER, 10, 13):
-            line_left = self.lines[self.tcy][:self.tcx]
-            line_right = self.lines[self.tcy][self.tcx:]
-            self.lines.insert(self.tcy + 1, line_right)
-            self.lines[self.tcy] = line_left
-            self.tcy += 1
-            self.tcx = 0
-        else:
-            self.lines[self.tcy] = self.lines[self.tcy][:self.tcx] + wc + self.lines[self.tcy][self.tcx:]
-            self.tcx += 1
-        if (self.tcy == len(self.lines)-1) and (self.tcx == len(self.lines[self.tcy])):
-            self.additional = True
-        self.render()
-    def update(self, text):
-        if not self.editable:
-            return self.fix()
-        if type(text) != str:
-            text = str(text)
-        if not self.cache:
-            self.cache = text
-        else:
-            self.cache = self.text()
-        self.rendered = ''
-        self.lines = text[:self.max_length].split('\n')
-        self.count = len(text)
-        self.tcy = 0 # text_cursor_y
-        self.tcx = 0 # text_cursor_x
-        self.additional = False
-    def clean(self):
-        if not self.editable:
-            return self.fix()
-        self.cache = self.text()
-        self.update('')
-        self.render()
-    def restore(self):
-        if not self.editable:
-            return self.fix()
-        restore = self.text()
-        self.update(self.cache)
-        self.cache = restore
-        self.render()
-        self.cursor_set(len(self.lines)-1, len(self.lines[-1]))
-    def tty(self):
+        # init input
+        curses.savetty()
         curses.noecho()
         curses.cbreak()
-        curses.curs_set(2)
         curses.raw()
-        self.window.keypad(True)
-    def close(self):
-        self.container.erase()
-        self.container.refresh()
-    def edit(self):
-        curses.savetty()
-        self.container.erase()
-        if self.outline:
-            self.container.box()
-        self.container.refresh()
-        self.tty()
-        self.window.move(self.wcy, self.wcx)
+        curses.stdscr.keypad(True) 
+
+        self.view.erase()
+        if self.outline: self.view.box()
+        self.view.refresh()
+        self.cache = self.text
+        self.rendered = None
+
+        # input
+        self.view.move(self.curs_y, self.curs_x)
         if self.text:
             self.render()
-        for wc in input.listen(self.window, move=0):
+
+        for wc in input.listen(move=0, before=self.curs_fix):
             self.input(wc)
 
-        self.close()
+        # exit input
+        self.view.erase()
+        self.view.refresh()
         curses.resetty()
-        return self.text()
-    def render(self):
-        vxw = uni_snippets(self.lines[self.tcy][:self.tcx], self.view_width)
-        vcy = len(vxw) - 1
-        vcx = string_width(vxw[vcy][0])
-        if self.additional and (vcx<=1):
-            self.additional = False
 
-        preload = []
-        vyw = (self.view_height*3+1)//4 - 1
-        for line in self.lines[max(0, self.tcy + vcy - vyw- 1): self.tcy]:
-            preload += uni_snippets(line, self.view_width)
-        vry = len(preload) + vcy
-        lineview = uni_snippets(self.lines[self.tcy], self.view_width)
-        preload += lineview
-        for line in self.lines[self.tcy+1:min(len(self.lines), self.tcy + self.view_height)]:
-            preload += uni_snippets(line, self.view_width)
-        render_list = preload[max(0,vry - vyw) : min(len(preload), max(0,vry - vyw) + self.view_height)]
+        # unregister key
+        if type(self.stop) == int: input.offkey(self.stop, self.handle_stop)
+        elif self.stop is not None: input.offchar(self.stop, self.handle_stop)
+        if self.stop != input.ENTER: input.offkey(input.ENTER, self.handle_enter)
+        input.offkey(input.ESC, self.handle_exit)
+        input.offkey(input.CTRL + input.D, self.handle_stop)
+        input.offkey(input.CTRL + input.C, self.copy)
+        input.offkey(input.CTRL + input.X, self.clear)
+        input.offkey(input.CTRL + input.Z, self.undo)
 
-        willrender = str([st[0] for st in render_list])
-        if willrender != self.rendered:
-            if not self.additional:
-                self.view.erase()
-                self.rendered = willrender
-            
-            for i, line in enumerate(render_list):
-                self.view.addstr(i, 0, line[0])
-            self.view.refresh()
-            self.dispatch('change')
-        self.pcy = self.wcy + snippet_index(render_list, lineview[vcy])
-        self.pcx = self.wcx + vcx
-        self.window.move(self.pcy, self.pcx)
-    def dispatch(self, event):
-        for listener in self.listeners[event]:
-            listener(self)
-    def on(self,event,listener):
-        self.listeners[event].append(listener)
-    def fix(self):
-        self.window.move(self.pcy, self.pcx)
+        input.offkey(input.CTRL + input.A, self.curs_to_start)
+        input.offkey(input.CTRL + input.E, self.curs_to_end)
+        input.offkey(input.DOWN, self.curs_down)
+        input.offkey(input.UP, self.curs_up)
+        input.offkey(input.LEFT, self.curs_left)
+        input.offkey(input.RIGHT, self.curs_right)
+        input.offkey(input.BACKSPACE, self.handle_delete)
+        input.offmouse(input.SCROLL_DOWN, self.handle_mouse)
+        input.offmouse(input.SCROLL_UP, self.handle_mouse)
+
+        # restore state
+        if text is not None:
+            self.text = cache_text
+            self.curs_y = cache_y
+            self.curs_x = cache_x
+        if editable is not None:
+            self.editable = cache_editable
+
+        self.trigger('close')
+        return self.returnvalue
+
+    @debounce(1.6, True)
+    def update_cache(self, text=None, y=None, x=None):
+        text = text if text is not None else self.value()
+        if self.cache != text:
+            self.cache = text
+            self.cache_curs_y = y or self.curs_y
+            self.cache_curs_x = x or self.curs_x
+    def update(self, text:str, y=0, x=0, write=True):
+        if not self.editable: return self.curs_fix()
+        text = str(text)[:self.max_length]
+        if self.cache is None: self.update_cache(text, 0, 0, immediate=True)
+        elif self.cache != text:
+            self.update_cache(self.value(), self.curs_y, self.curs_x, immediate=True)
+        if write: self.text = text
+        self.text_lines = text.splitlines() or ['']
+        self.count = len(text)
+        y = min(y, len(self.text_lines)-1)
+        x = min(x, len(self.text_lines[-1]))
+        self.curs_y = y
+        self.curs_x = x
+        self.offset = y
+        self.line_offset = 0
+        line = split_bywidth(self.text_lines[y][:x], self.text_width)
+        self.win_curs_y = len(line)-1
+        self.win_curs_x = string_width(line[-1])%self.text_width
+    def value(self)->str:
+        return '\n'.join(getattr(self, 'text_lines', []))
+    def curs_to(self, y:int, x:int):
+        self.curs_y = y
+        self.curs_x = x
+        self.offset = y
+        self.line_offset = 0
+        line = split_bywidth(self.text_lines[y][:x], self.text_width)
+        self.win_curs_y = len(line)-1
+        self.win_curs_x = string_width(line[-1])%self.text_width
+        self.render()
+    def curs_fix(self):
+        if (0 <= self.win_curs_y) and (self.win_curs_y < self.text_height) and (0 <= self.win_curs_x) and (self.win_curs_x <= self.text_width):
+            curses.stdscr.move(self.cursbase_y+self.win_curs_y, self.cursbase_x+self.win_curs_x)
+            curses.curs_set(2)
+        else:
+            curses.curs_set(0)
+    def edit_fix(self):
+        if (getattr(self, 'cache_editing', None) is not None) and ((self.win_curs_y<0) or (self.win_curs_y>=self.text_height)):
+            self.offset = self.cache_editing.offset
+            self.lineheight = self.cache_editing.lineheight
+            self.line_offset = self.cache_editing.line_offset
+            self.win_curs_x = self.cache_editing.win_curs_x
+            self.win_curs_y = self.cache_editing.win_curs_y
+        self.cache_editing = None
+    def view_fix(self):
+        if self.win_curs_x < 0:
+            if self.win_curs_y > 0:
+                self.win_curs_y -= 1
+                prefragment = self.buffer[self.win_curs_y]
+                preline = split_bywidth(self.text_lines[prefragment[1]], self.text_width)
+                self.lineheight = len(preline)
+                self.line_offset = len(preline)-1
+                self.win_curs_x = string_width(prefragment[0])%self.text_width
+            elif self.offset > 0:
+                self.offset -= 1
+                preline = split_bywidth(self.text_lines[self.offset], self.text_width)
+                self.lineheight = len(preline)
+                self.line_offset = len(preline)-1
+                self.win_curs_x = string_width(preline[-1][0])%self.text_width
+            else:
+                self.win_curs_x = 0
+                self.win_curs_y = 0
+
+        if self.win_curs_y < 0:
+            if self.line_offset > 0:
+                fragment = self.buffer[0]
+                line = split_bywidth(self.text_lines[fragment[1]], self.text_width)
+                self.line_offset -= 1
+                self.win_curs_x = string_width(line[self.line_offset-1])%self.text_width
+            elif self.offset > 0:
+                self.offset -= 1
+                preline = split_bywidth(self.text_lines[self.offset], self.text_width)
+                self.lineheight = len(preline)
+                self.line_offset = len(preline)-1
+                self.win_curs_x = min(self.win_curs_x, string_width(preline[-1]))
+            else:
+                self.win_curs_x = 0
+            self.win_curs_y = 0
+
+        if self.win_curs_x > self.text_width:
+            if self.win_curs_y + 1 < len(self.buffer):
+                self.win_curs_y += 1
+                self.win_curs_x = 0
+            elif self.win_curs_y + 1 < self.text_height:
+                self.win_curs_x = self.text_width
+            else:
+                last_fragment = self.buffer[-1]
+                if ((last_fragment[2]+1)<len(split_bywidth(self.text_lines[last_fragment[1]], self.text_width))) or (last_fragment[1]+1 < len(self.text_lines)):
+                    if self.line_offset+1 < self.lineheight:
+                        self.line_offset += 1
+                    else:
+                        self.offset += 1
+                        nextline = split_bywidth(self.text_lines[self.offset], self.text_width)
+                        self.lineheight = len(nextline)
+                        self.line_offset = 0
+                    self.win_curs_y = self.text_height-1
+                    self.win_curs_x = 0
+                else:
+                    self.win_curs_x = self.text_width
+
+        if self.win_curs_y >= self.text_height:
+            last_fragment = self.buffer[-1]
+            next_fragment_line = split_bywidth(self.text_lines[last_fragment[1]], self.text_width)
+            if ((last_fragment[2]+1)<len(next_fragment_line)) or (last_fragment[1]+1 < len(self.text_lines)):
+                if self.line_offset+1 < self.lineheight:
+                    self.line_offset += 1
+                else: 
+                    self.offset += 1
+                    self.line_offset = 0
+
+                if (last_fragment[2]+1)<len(next_fragment_line):
+                    next_fragment_text = next_fragment_line[last_fragment[2]+1]
+                else:
+                    nextline = split_bywidth(self.text_lines[last_fragment[1]+1], self.text_width)
+                    next_fragment_text = nextline[0]
+                    self.lineheight = len(nextline)
+                    self.line_offset = 0
+                self.win_curs_x = min(self.win_curs_x, string_width(next_fragment_text))
+            self.win_curs_y = self.text_height-1
+    def input(self, wc:str):
+        if not self.editable: return self.curs_fix()
+        self.edit_fix()
+        if self.count == self.max_length: return
+        self.update_cache(self.value(), self.curs_y, self.curs_x)
+        self.count += 1
+        if ord(wc) in (curses.KEY_ENTER, 10, 13):
+            line_left = self.text_lines[self.curs_y][:self.curs_x]
+            line_right = self.text_lines[self.curs_y][self.curs_x:]
+            self.text_lines.insert(self.curs_y + 1, line_right)
+            self.text_lines[self.curs_y] = line_left
+            self.curs_y += 1
+            self.win_curs_y += 1
+            self.curs_x = 0
+            self.win_curs_x = 0
+        else:
+            self.text_lines[self.curs_y] = self.text_lines[self.curs_y][:self.curs_x] + wc + self.text_lines[self.curs_y][self.curs_x:]
+            self.curs_x += 1
+            self.win_curs_x += 1
+        self.render()
+    def render(self, keep_edit=True):
+        if keep_edit: self.view_fix()
+        elif getattr(self, 'cache_editing', None) is None:
+            self.cache_editing = lambda:None
+            self.cache_editing.offset = self.offset
+            self.cache_editing.lineheight = self.lineheight
+            self.cache_editing.line_offset = self.line_offset
+            self.cache_editing.win_curs_x = self.win_curs_x
+            self.cache_editing.win_curs_y = self.win_curs_y
+
+
+        if self.line_offset < 0:
+            if self.offset > 0:
+                self.offset -= 1
+                preline = split_bywidth(self.text_lines[self.offset], self.text_width)
+                self.lineheight = len(preline)
+                self.line_offset = len(preline)-1
+                self.win_curs_y += 1
+            else:
+                self.line_offset = 0
+
+        if self.buffer and (self.line_offset >= len(split_bywidth(self.text_lines[self.offset], self.text_width))):
+            last_fragment = self.buffer[-1]
+            if (((last_fragment[2]+1)<len(split_bywidth(self.text_lines[last_fragment[1]], self.text_width))) \
+               or (last_fragment[1]+1 < len(self.text_lines))) \
+            and (self.offset+1 < len(self.text_lines)):
+                self.offset += 1
+                nextline = split_bywidth(self.text_lines[self.offset], self.text_width)
+                self.lineheight = len(nextline)
+                self.line_offset = len(nextline)-1
+                self.win_curs_y -= 1
+            else:
+                self.line_offset = self.lineheight-1
+        
+        if keep_edit: self.view_fix()
+        preload = splitstrings_bywidth(self.text_lines, self.text_width, self.offset, min(len(self.text_lines), self.offset + self.text_height))
+        self.buffer = preload[self.line_offset : min(len(preload), self.line_offset + self.text_height)]
+        if self.rendered != self.buffer:
+            self.textviewer.erase()
+            self.rendered = self.buffer
+            for i, line in enumerate(self.buffer):
+                self.textviewer.addstr(i, 0, line[0])
+            self.textviewer.refresh()
+            self.trigger('change')
+        self.curs_fix()
+
+    def handle_exit(self, *args):
+        input.stop()
+        self.returnvalue = self.text
+    def handle_stop(self, *args):
+        input.stop()
+        if self.editable: self.text = self.value()
+        self.returnvalue = self.value()
+    def handle_enter(self, *args):
+        self.input('\n')
+    def handle_delete(self, *args):
+        if not self.editable: return self.curs_fix()
+        self.edit_fix()
+        self.update_cache(self.value(), self.curs_y, self.curs_x)
+        if len(self.text_lines[self.curs_y]) > 0:
+            if (self.curs_x > 0):
+                self.text_lines[self.curs_y] = self.text_lines[self.curs_y][:max(0,self.curs_x-1)] + self.text_lines[self.curs_y][self.curs_x:]
+                self.count -= 1
+                self.curs_x -= 1
+                self.win_curs_x -= 1
+                self.render()
+            elif self.curs_y - 1 >= 0:
+                self.curs_x = len(self.text_lines[self.curs_y - 1])
+                self.win_curs_x = string_width(self.text_lines[self.curs_y - 1])%self.text_width
+                self.text_lines[self.curs_y - 1] += self.text_lines.pop(self.curs_y)
+                self.count -= 1
+                self.curs_y -= 1
+                self.win_curs_y -= 1
+                self.render()
+        elif self.curs_y > 0:
+            if not self.editable: return
+            self.text_lines.pop(self.curs_y)
+            self.count -= 1
+            self.curs_y -= 1
+            self.win_curs_y -= 1
+            self.curs_x = len(self.text_lines[self.curs_y])
+            self.win_curs_x = string_width(self.text_lines[self.curs_y])%self.text_width
+            self.render()
+    def copy(self, *args):
+        pyperclip.copy(self.value())
+    def clear(self, *args):
+        if not self.editable: return self.curs_fix()
+        self.update('', write=False)
+        self.render()
+    def undo(self, *args):
+        if (not self.editable) or (self.cache is None): return self.curs_fix()
+        self.update(self.cache, getattr(self,'cache_curs_y', self.curs_y), getattr(self,'cache_curs_x',self.curs_x), write=False)
+        self.render()
+    def curs_to_start(self, *args):
+        self.curs_to(0, 0)
+    def curs_to_end(self, *args):
+        self.curs_to(len(self.text_lines)-1, len(self.text_lines[-1]))
+    def curs_down(self, *args):
+        self.edit_fix()
+        if self.curs_y + 1 < len(self.text_lines):
+            self.curs_y += 1
+            self.win_curs_y += 1
+            if self.curs_x > len(self.text_lines[self.curs_y]):
+                self.curs_x = len(self.text_lines[self.curs_y])
+                self.win_curs_x = string_width(self.text_lines[self.curs_y])%self.text_width
+            self.trigger('move')
+            self.render()
+    def curs_up(self, *args):
+        self.edit_fix()
+        if self.curs_y - 1 >= 0:
+            self.curs_y -= 1
+            self.win_curs_y -= 1
+            if self.curs_x > len(self.text_lines[self.curs_y]):
+                self.curs_x = len(self.text_lines[self.curs_y])
+                self.win_curs_x = string_width(self.text_lines[self.curs_y])%self.text_width
+            self.trigger('move')
+            self.render()
+    def curs_left(self, *args):
+        self.edit_fix()
+        if self.curs_x - 1 >= 0:
+            self.curs_x -= 1
+            self.win_curs_x -= 1
+            self.trigger('move')
+            self.render()
+        elif self.curs_y - 1 >= 0:
+            self.curs_y -= 1
+            self.win_curs_y -= 1
+            self.curs_x = len(self.text_lines[self.curs_y])
+            self.win_curs_x = string_width(self.text_lines[self.curs_y])%self.text_width
+            self.trigger('move')
+            self.render()
+    def curs_right(self, *args):
+        self.edit_fix()
+        if self.curs_x < len(self.text_lines[self.curs_y]):
+            self.curs_x += 1
+            self.win_curs_x += 1
+            self.trigger('move')
+            self.render()
+        elif self.curs_y + 1 < len(self.text_lines):
+            self.curs_y += 1
+            self.win_curs_y += 1
+            self.curs_x = 0
+            self.win_curs_x = 0
+            self.trigger('move')
+            self.render()
+    def handle_mouse(self, y, x, type):
+        if (self.abs_y <= y) and (y < self.abz_y) and (self.abs_x <= x) and (x < self.abz_x):
+            if type == input.SCROLL_DOWN:
+                self.line_offset += 1
+                self.render(keep_edit=False)
+            elif type == input.SCROLL_UP:
+                self.line_offset -= 1
+                self.render(keep_edit=False)
+            elif type == input.LEFT_CLICK:
+                self.win_curs_y = min(y-self.cursbase_y, len(self.buffer)-1)
+                fragment = self.buffer[self.win_curs_y]
+                self.win_curs_x = min(x-self.cursbase_x, string_width(fragment[0]))
+                self.curs_y = fragment[1]
+                self.curs_x = fragment[2]*self.text_width+self.win_curs_x
+                self.cache_editing = None
+                self.render()
+        else: return self.curs_fix()
+
 
 class TokenCounter(Token):
     def __init__(self, window, y, x, init='0'):
         super().__init__()
-        self.window = window
-        self.view = self.window.derwin(1, 8,  y, x)
-        self.view.addstr(0,1,init.center(6))
-    def update(self,text):
+        self.view = window
+        self.y = y
+        self.x = x
+        self.view.addstr(y, x, init.center(6))
+    def update(self, text):
         def task():
-            self.view.addstr(0,1,str(self.count(text)).center(6))
+            self.view.addstr(self.y, self.x, str(self.count(text)).center(6))
         threading.Thread(target=task).start()
-    def set(self,value):
-        self.view.addstr(0,1,str(value).center(6))
+    def set(self, value):
+        self.view.addstr(self.y, self.x, str(value).center(6))
 
 class CharCounter:
     def __init__(self, window, y, x, init='0'):
-        self.window = window
-        self.view = self.window.derwin(1, 8,  y, x)
-        self.view.addstr(0,1,init.center(6))
+        self.view = window
+        self.y = y
+        self.x = x
+        self.view.addstr(y, x, init.center(6))
     def update(self,text):
-        self.view.addstr(0,1,str(len(text)).center(6))
+        self.view.addstr(self.y, self.x, str(len(text)).center(6))
+        self.view.refresh()
     def set(self,value):
-        self.view.addstr(0,1,str(value).center(6))
+        self.view.addstr(self.y, self.x, str(value).center(6))
 
+@dataclass
 class Editor(InputBox):
-    def __init__(self, window, top = 0, bottom = 0, right = 0, left = 0, padding_y = 0, padding_x = 1, text = '', listeners = {'change':[],'move':[]}, max_length = None, outline = 1, editable = True, release = input.ESC):
-        self.window = window
-        self.top = top
-        self.bottom = bottom
-        self.right = right
-        self.left = left
-        self.padding_y = padding_y
-        self.padding_x = padding_x
-        self._text = text
-        self.listeners = listeners
-        self.max_length = max_length
-        self.outline = outline
-        self.editable = editable
-        self.release = release
-
-    def close(self):
-        super().close()
-        self.window.erase()
-        self.window.refresh()
-    def edit(self):
-        win_height, win_width = self.window.getmaxyx()
-        width = win_width - self.right - self.left
-        height = win_height - self.bottom - self.top
-        view = self.window.derwin(height, width, self.top, self.left)
-        view.erase()
+    outline:int = 1
+    def __new__(klass, *args, **kwargs):
+        self = object.__new__(klass)
+        InputBox.__init__(self, *args, **kwargs)
+        return self
+    def edit(self, text=None, editable=None):
+        self.root_view = getattr(self, 'root_view', self.window)
+        self.root_top = getattr(self, 'root_top', self.top)
+        self.root_right = getattr(self, 'root_right', self.right)
+        self.root_bottom = getattr(self, 'root_bottom', self.bottom)
+        self.root_left = getattr(self, 'root_left', self.left)
+        root_view:curses._CursesWindow = self.root_view
+        root_height, root_width = root_view.getmaxyx()
+        width = root_width - self.root_right - self.root_left
+        height = root_height - self.root_bottom - self.root_top
+        editor_view:curses._CursesWindow = root_view.derwin(height, width, self.root_top, self.root_left)
+        editor_view.erase()
         lineview = None
-        if height < 4:
-            super().__init__(view,0,0,15,0,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
-            self.char = CharCounter(view, height//2, width - 8)
-            view.addstr(height//2,width-8,'/')
-            self.token = TokenCounter(view, height//2, width - 15)
-        elif height < 5:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
-            self.char = CharCounter(view, 2, width - 8)
-            self.token = TokenCounter(view, 1, width - 8)
-            lineview = view.derwin(height, 5, 0, 0)
-            def updatelineview(_):
-                lineview.addstr(1,0, str(self.tcy).center(5))
-                lineview.addstr(2,0, str(len(self.lines)-self.tcy - 1).center(5))
-        elif height < 6:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
-            self.char = CharCounter(view, 3, width - 8)
-            self.token = TokenCounter(view, 1, width - 8)
-            lineview = view.derwin(height, 5, 0, 0)
-            def updatelineview(_):
-                lineview.addstr(1,0, str(self.tcy).center(5))
-                lineview.addstr(3,0, str(len(self.lines)-self.tcy - 1).center(5))
-        elif height < 12:
-            super().__init__(view,0,0,8,5,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
-            self.char = CharCounter(view, height//2-2, width - 8)
-            self.token = TokenCounter(view, height//2+1, width - 8)
 
-            view.addstr(height//2-1, width-7, 'token')
-            view.addstr(height//2, width-7, 'chars')
-            lineview = view.derwin(height, 5, 0, 0)
+        self.window = editor_view
+        self.top = 0
+        self.right = 8
+        self.bottom = 0
+        self.left = 5
+        if height < 4:
+            self.left = 0
+            self.right = 15
+            self.char = CharCounter(editor_view, height//2, width - 7)
+            self.token = TokenCounter(editor_view, height//2, width - 14)
+            editor_view.addstr(height//2,width-8,'/')
+        elif height < 5:
+            self.char = CharCounter(editor_view, 2, width - 7)
+            self.token = TokenCounter(editor_view, 1, width - 7)
+            lineview = editor_view.derwin(height, 5, 0, 0)
+            def updatelineview(*args):
+                lineview.addstr(1,0, str(getattr(self, 'curs_y', 0)).center(5))
+                lineview.addstr(2,0, str(len(getattr(self, 'text_lines', []))-getattr(self, 'curs_y', 0)-1).center(5))
+        elif height < 6:
+            self.char = CharCounter(editor_view, 3, width - 7)
+            self.token = TokenCounter(editor_view, 1, width - 7)
+            lineview = editor_view.derwin(height, 5, 0, 0)
+            def updatelineview(*args):
+                lineview.addstr(1,0, str(getattr(self, 'curs_y', 0)).center(5))
+                lineview.addstr(3,0, str(len(getattr(self, 'text_lines', []))-getattr(self, 'curs_y', 0)-1).center(5))
+        elif height < 12:
+            self.char = CharCounter(editor_view, height//2-2, width - 7)
+            self.token = TokenCounter(editor_view, height//2+1, width - 7)
+
+            editor_view.addstr(height//2-1, width-7, 'token')
+            editor_view.addstr(height//2, width-7, 'chars')
+            lineview = editor_view.derwin(height, 5, 0, 0)
             lineview.addstr(height//2-1,0, '⭱'.center(5))
             lineview.addstr(height//2,0, '⭳'.center(5))
-            def updatelineview(_):
-                lineview.addstr(height//2-2,0, str(self.tcy).center(5))
-                lineview.addstr(height//2+1,0, str(len(self.lines)-self.tcy - 1).center(5))
+            def updatelineview(*args):
+                lineview.addstr(height//2-2,0, str(getattr(self, 'curs_y', 0)).center(5))
+                lineview.addstr(height//2+1,0, str(len(getattr(self, 'text_lines', []))-getattr(self, 'curs_y', 0)-1).center(5))
         else:
-            super().__init__(view,0,0,0,8,self.padding_y,self.padding_x,self._text,self.listeners,self.max_length,self.outline,self.editable,self.release)
+            self.left = 8
+            self.right = 0
             padding = (height-12)//6
-            self.char = CharCounter(view, height//3+6+padding, 0)
-            self.token = TokenCounter(view, height//3+3+padding, 0)
+            self.char = CharCounter(editor_view, height//3+6+padding, 1)
+            self.token = TokenCounter(editor_view, height//3+3+padding, 1)
             
-            view.addstr(height//3+2+padding, 1, 'token')
-            view.addstr(height//3+5+padding, 1, 'chars')
-            lineview = view.derwin(height//3+2, 8, 0, 0)
+            editor_view.addstr(height//3+2+padding, 1, 'token')
+            editor_view.addstr(height//3+5+padding, 1, 'chars')
+            lineview = editor_view.derwin(height//3+2, 8, 0, 0)
             lineview.addstr(height//3-2-padding,0, '⭱'.center(7))
             lineview.addstr(height//3-1-padding,0, '⭳'.center(7))
-            def updatelineview(_):
-                lineview.addstr(height//3-3-padding,0, str(self.tcy).center(7))
-                lineview.addstr(height//3-padding,0, str(len(self.lines)-self.tcy - 1).center(7))
-            
-        def updatecountview(_):
-            self.char.set(self.count)
-            self.token.update(self.text())
+            def updatelineview(*args):
+                lineview.addstr(height//3-3-padding,0, str(getattr(self, 'curs_y', 0)).center(7))
+                lineview.addstr(height//3-padding,0, str(len(getattr(self, 'text_lines', []))-getattr(self, 'curs_y', 1)-1).center(7))
 
-        self.on('change',updatecountview)
+        def updatecountview():
+            self.char.set(self.count)
+            self.token.update(self.value())
+            editor_view.refresh()
+
+        self.subscribe('change',updatecountview)
         if lineview:
-            updatelineview(None)
-            self.on('change',updatelineview)
-            self.on('move',updatelineview)
-        self.window.refresh()
-        return super().edit()
+            updatelineview()
+            self.subscribe('change',updatelineview)
+            self.subscribe('move',updatelineview)
+            self.subscribe('change',lineview.refresh)
+            self.subscribe('move',lineview.refresh)
+        editor_view.refresh()
+        value = InputBox.edit(self, text, editable)
+        editor_view.erase()
+        editor_view.refresh()
+        self.trigger('close')
+        return value
