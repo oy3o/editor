@@ -270,7 +270,7 @@ class InputBox:
     def handle_exit(self, *args):
         input.stop()
         self.returnvalue = self.text
-    @debounce(1.6, enter=True, exit=False)
+    @debounce(0.8, enter=True, exit=False)
     def handle_stop(self, *args):
         input.stop()
         if self.editable: self.text = self.value()
@@ -465,7 +465,6 @@ class InputBox:
             self.cache.inline_offset_cur = inline_offset_cur if inline_offset_cur is not None else self.inline_offset_cur
             self.cache.screen_curs_x = screen_curs_x if screen_curs_x is not None else self.screen_curs_x
             self.cache.screen_curs_y = screen_curs_y if screen_curs_y is not None else self.screen_curs_y
-    @throttle(0.25)
     def update(
         self,
         text:str,
