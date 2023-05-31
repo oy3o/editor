@@ -1,6 +1,6 @@
 from oy3opy import *
 from oy3opy.utils.terminal import curses
-from oy3opy.utils.string import Token, string_width, splitstrings_bywidth, split_bywidth
+from oy3opy.utils.string import Token, string_width, split_bywidth_strings, split_bywidth
 import oy3opy.input as input
 import pyperclip
 import threading
@@ -230,7 +230,7 @@ class InputBox:
             self.cache_editing.buffer = self.buffer
 
         preload_end =  min(len(self.text_lines), self.text_view_offset + self.text_view_height)
-        preload = splitstrings_bywidth(self.text_lines, self.text_view_width, self.text_view_offset, preload_end)
+        preload = split_bywidth_strings(self.text_lines, self.text_view_width, self.text_view_offset, preload_end)
         buffer_end = min(len(preload), self.inline_offset_cur + self.text_view_height)
         self.buffer = preload[self.inline_offset_cur : buffer_end]
 
@@ -483,7 +483,7 @@ class InputBox:
         self.text_char_count = len(text)
         if None in (text_view_offset, inline_offset_max, inline_offset_cur , screen_curs_y, screen_curs_x):
             length = len(self.text_lines)
-            fragments = splitstrings_bywidth(
+            fragments = split_bywidth_strings(
                 self.text_lines,
                 self.text_view_width,
                 max(0, length-self.text_view_height),
@@ -493,7 +493,7 @@ class InputBox:
             (_, __offset, __line_offset) = buffer[0]
             self.buffer = buffer
         else:
-            fragments = splitstrings_bywidth(
+            fragments = split_bywidth_strings(
                 self.text_lines,
                 self.text_view_width,
                 text_view_offset,
